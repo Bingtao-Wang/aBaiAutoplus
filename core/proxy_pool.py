@@ -71,6 +71,14 @@ class ProxyPool:
                 s.add(p)
                 s.commit()
 
+    # 检测靶子：优先用稳定的 generate_204（与 Clash 健康检查同源），
+    # 任一可达即视为代理可用。避免依赖单个易宕机的公共服务（如 httpbin.org）。
+    _CHECK_URLS = (
+        ("https://www.gstatic.com/generate_204", (200, 204)),
+        ("https://cp.cloudflare.com/generate_204", (200, 204)),
+        ("https://api.ip.sb/ip", (200,)),
+    )
+
     def check_all(self) -> dict:
         """检测所有代理可用性"""
         import requests
@@ -78,18 +86,23 @@ class ProxyPool:
             proxies = s.exec(select(ProxyModel)).all()
         results = {"ok": 0, "fail": 0}
         for p in proxies:
-            try:
-                r = requests.get("https://httpbin.org/ip",
-                                 proxies={"http": p.url, "https": p.url},
-                                 timeout=8)
-                if r.status_code == 200:
-                    self.report_success(p.url)
-                    results["ok"] += 1
+            ok = False
+            for url, accept in self._CHECK_URLS:
+                try:
+                    r = requests.get(url,
+                                     proxies={"http": p.url, "https": p.url},
+                                     timeout=8)
+                    if r.status_code in accept:
+                        ok = True
+                        break
+                except Exception:
                     continue
-            except Exception:
-                pass
-            self.report_fail(p.url)
-            results["fail"] += 1
+            if ok:
+                self.report_success(p.url)
+                results["ok"] += 1
+            else:
+                self.report_fail(p.url)
+                results["fail"] += 1
         return results
 
 
